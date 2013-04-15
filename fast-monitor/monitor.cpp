@@ -3,6 +3,7 @@
 #include <unordered_set>
 
 #include <boost/python.hpp>
+namespace python = boost::python;
 
 #include <bitcoin/bitcoin.hpp>
 
@@ -146,11 +147,19 @@ bool monitor::transaction_is_filtered(const hash_digest& tx_hash)
         tx_hash) != tx_filter_.end();
 }
 
+struct address_change
+{
+    std::string address;
+    message::output_point outpoint;
+};
+
 class outputs_watch
 {
 public:
+    typedef std::vector<address_change> address_change_list;
+
     void push(const std::string& address);
-    void pull();
+    address_change_list pull();
 
     void receive_transaction(const message::transaction& tx);
 
@@ -161,6 +170,7 @@ private:
     // to easily integrate with Python.
     std::mutex mutex_;
     address_set addresses_;
+    address_change_list address_changes_;
 };
 
 void outputs_watch::push(const std::string& address)
@@ -169,13 +179,17 @@ void outputs_watch::push(const std::string& address)
     addresses_.insert(address);
 }
 
-void outputs_watch::pull()
+outputs_watch::address_change_list outputs_watch::pull()
 {
+    std::lock_guard<std::mutex> lock(mutex_);
+    address_change_list result = address_changes_;
+    address_changes_.clear();
+    return result;
 }
 
 void outputs_watch::receive_transaction(const message::transaction& tx)
 {
-    log_info() << "Transaction: " << hash_transaction(tx);
+    //log_info() << "Transaction: " << hash_transaction(tx);
     for (size_t i = 0; i < tx.outputs.size(); ++i)
     {
         const auto& output = tx.outputs[i];
@@ -186,6 +200,9 @@ void outputs_watch::receive_transaction(const message::transaction& tx)
         if (addresses_.count(payaddr.encoded()) > 0)
         {
             // Add to the notification stack.
+            address_change entry{
+                payaddr.encoded(), {hash_transaction(tx), i}};
+            address_changes_.push_back(entry);
         }
     }
 }
@@ -197,7 +214,7 @@ public:
     bool stop();
 
     void push(const std::string& address);
-    void pull();
+    python::list pull();
 
 private:
     // To make the facade copyable and compile with boost::python
@@ -242,8 +259,20 @@ void facade::push(const std::string& address)
     watch_->push(address);
 }
 
-void facade::pull()
+python::list facade::pull()
 {
+    auto address_changes = watch_->pull();
+    python::list result;
+    for (const address_change& change: address_changes)
+    {
+        python::list entry;
+        entry.append(change.address);
+        const hash_digest& tx_hash = change.outpoint.hash;
+        entry.append(std::string(tx_hash.begin(), tx_hash.end()));
+        entry.append(change.outpoint.index);
+        result.append(entry);
+    }
+    return result;
 }
 
 } // namespace fmon
@@ -256,6 +285,7 @@ BOOST_PYTHON_MODULE(fastmonitor)
         .def("start", &facade::start)
         .def("stop", &facade::stop)
         .def("push", &facade::push)
+        .def("pull", &facade::pull)
     ;
 }
 
