@@ -42,7 +42,7 @@ const std::string pubkey_to_address(const std::string& pubkey)
     return payaddr.encoded();
 }
 
-BOOST_PYTHON_MODULE(_genaddr)
+BOOST_PYTHON_MODULE(_detwallet)
 {
     using namespace boost::python;
     class_<bc::deterministic_wallet>("DeterministicWallet")
