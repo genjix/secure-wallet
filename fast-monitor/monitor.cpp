@@ -28,14 +28,18 @@ public:
     std::error_code start(transaction_handler handle_tx);
     std::error_code stop();
 
-private:
-    typedef boost::circular_buffer<hash_digest> transaction_filter;
+    void set_latest_block(const hash_digest& hash);
 
-    void watch_for_transactions(channel_ptr node);
+private:
+    typedef boost::circular_buffer<hash_digest> filter_buffer;
+
+    void watch(channel_ptr node);
     void receive_inventory(const std::error_code& ec,
         const message::inventory& inv, channel_ptr node);
     void receive_transaction(const std::error_code& ec,
         const message::transaction& tx, channel_ptr node);
+    void receive_block(const std::error_code& ec,
+        const message::block& blk, channel_ptr node);
 
     // Check whether the hash exists in our filter.
     bool transaction_is_filtered(const hash_digest& tx_hash);
@@ -48,7 +52,7 @@ private:
 
     // Avoid downloading the same transaction multiple times by
     // temporarily filtering it.
-    transaction_filter tx_filter_;
+    filter_buffer tx_filter_;
     transaction_handler handle_tx_;
 };
 
@@ -68,7 +72,7 @@ std::error_code monitor::start(transaction_handler handle_tx)
             promise.set_value(ec);
         });
     protocol_.subscribe_channel(
-        std::bind(&monitor::watch_for_transactions, this, _1));
+        std::bind(&monitor::watch, this, _1));
     return future.get();
 }
 std::error_code monitor::stop()
@@ -87,14 +91,27 @@ std::error_code monitor::stop()
     return std::error_code();
 }
 
-void monitor::watch_for_transactions(channel_ptr node)
+void monitor::set_latest_block(const hash_digest& hash)
+{
+    static hash_digest latest_block = null_hash;
+    if (latest_block == hash)
+        return;
+    latest_block = hash;
+    message::get_data getdat;
+    getdat.inventories.push_back({message::inventory_type::block, hash});
+    protocol_.broadcast(getdat);
+}
+
+void monitor::watch(channel_ptr node)
 {
     node->subscribe_inventory(
         std::bind(&monitor::receive_inventory, this, _1, _2, node));
     node->subscribe_transaction(
         std::bind(&monitor::receive_transaction, this, _1, _2, node));
+    node->subscribe_block(
+        std::bind(&monitor::receive_block, this, _1, _2, node));
     protocol_.subscribe_channel(
-        std::bind(&monitor::watch_for_transactions, this, _1));
+        std::bind(&monitor::watch, this, _1));
 }
 
 void monitor::receive_inventory(const std::error_code& ec,
@@ -139,6 +156,24 @@ void monitor::receive_transaction(const std::error_code& ec,
         return;
     tx_filter_.push_back(tx_hash);
     handle_tx_(tx);
+}
+
+void monitor::receive_block(const std::error_code& ec,
+    const message::block& blk, channel_ptr node)
+{
+    // We can use a static value here since it's only used in this function.
+    static filter_buffer blk_filter(10);
+    auto block_is_filtered = [&blk_filter](const hash_digest& blk_hash)
+        {
+            return std::find(blk_filter.begin(), blk_filter.end(),
+                blk_hash) != blk_filter.end();
+        };
+    const hash_digest& blk_hash = hash_block_header(blk);
+    if (block_is_filtered(blk_hash))
+        return;
+    blk_filter.push_back(blk_hash);
+    for (const message::transaction& tx: blk.transactions)
+        handle_tx_(tx);
 }
 
 bool monitor::transaction_is_filtered(const hash_digest& tx_hash)
@@ -216,6 +251,8 @@ public:
     void push(const std::string& address);
     python::list pull();
 
+    void set_latest_block(const std::string& hash);
+
 private:
     // To make the facade copyable and compile with boost::python
     typedef std::shared_ptr<outputs_watch> outputs_watch_ptr;
@@ -275,6 +312,13 @@ python::list facade::pull()
     return result;
 }
 
+void facade::set_latest_block(const std::string& hash)
+{
+    hash_digest blk_hash;
+    std::copy(hash.begin(), hash.end(), blk_hash.begin());
+    monitor_->set_latest_block(blk_hash);
+}
+
 } // namespace fmon
 
 BOOST_PYTHON_MODULE(fastmonitor)
@@ -286,6 +330,7 @@ BOOST_PYTHON_MODULE(fastmonitor)
         .def("stop", &facade::stop)
         .def("push", &facade::push)
         .def("pull", &facade::pull)
+        .def("set_latest_block", &facade::set_latest_block)
     ;
 }
 
