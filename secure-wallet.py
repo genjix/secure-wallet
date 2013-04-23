@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import hashlib
 import sys
 import time
 import deserialize
@@ -68,7 +69,7 @@ class AddressResolver:
     def history_is_required(self, address, status):
         if address not in self.addrs:
             return True
-        return self.compute_status(self.addrs[address]) != status
+        return self.compute_status(address) != status
 
     def set_history(self, address, history):
         self.addrs[address] = history
@@ -85,16 +86,25 @@ class AddressResolver:
 
     def received(self, address):
         history = self.addrs[address]
-        total_value = 0
+        balances = [0, 0]
         for item in history:
             tx_hash = item["tx_hash"].decode("hex")
+            tx_height = item["height"]
             if tx_hash not in self.txs:
                 return None
             tx = self.txs[tx_hash]
-            for output in tx["outputs"]:
-                if output["address"] == address:
-                    total_value += output["value"]
-        return total_value
+            is_confirmed = tx_height == 0
+            self.check_outputs(tx["outputs"], address, balances, is_confirmed)
+        return balances
+
+    def check_outputs(self, outputs, address, balances, is_confirmed):
+        for output in outputs:
+            if output["address"] != address:
+                continue
+            if is_confirmed:
+                balances[0] += output["value"]
+            else:
+                balances[1] += output["value"]
 
 class Application:
 
