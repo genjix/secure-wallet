@@ -93,7 +93,7 @@ class AddressResolver:
             if tx_hash not in self.txs:
                 return None
             tx = self.txs[tx_hash]
-            is_confirmed = tx_height == 0
+            is_confirmed = tx_height >= 2
             self.check_outputs(tx["outputs"], address, balances, is_confirmed)
         return balances
 
