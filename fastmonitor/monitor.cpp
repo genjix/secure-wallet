@@ -321,7 +321,7 @@ void facade::set_latest_block(const std::string& hash)
 
 } // namespace fmon
 
-BOOST_PYTHON_MODULE(fastmonitor)
+BOOST_PYTHON_MODULE(_fastmonitor)
 {
     using namespace boost::python;
     using fmon::facade;
