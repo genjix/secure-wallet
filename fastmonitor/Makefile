@@ -2,5 +2,5 @@ CC = g++ -fPIC -Wall -ansi `pkg-config --cflags libbitcoin` -I/usr/include/pytho
 
 default:
 	$(CC) -c monitor.cpp -o monitor.o
-	$(CC) -shared -Wl,-soname,fastmonitor.so monitor.o -lpython2.7 -lboost_python `pkg-config --libs libbitcoin` -lboost_thread -o fastmonitor.so
+	$(CC) -shared -Wl,-soname,_fastmonitor.so monitor.o -lpython2.7 -lboost_python `pkg-config --libs libbitcoin` -lboost_thread -o _fastmonitor.so
 
