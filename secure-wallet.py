@@ -1,14 +1,10 @@
 #!/usr/bin/env python
 
-import httplib2
-import json
 import sys
-import random
 import time
-import urllib2
-
+import deserialize
 import detwallet
-import fastmonitor
+import electrum
 
 def poll_latest_id():
     f = open("block-count")
@@ -32,96 +28,144 @@ class Wallet:
         self.sequence = latest_id
         return addrs
 
-class PeriodicMethod:
+class Interface:
 
-    def __init__(self, interval_time, callback):
-        self.interval_time = interval_time
-        self.callback = callback
-        self.last_time = 0
+    def start(self):
+        self.interface = electrum.Interface({"server": "ecdsa.org:50001:t"})
+        self.interface.start()
+        for i in range(8):
+            if self.interface.is_connected:
+                break
+            time.sleep(1)
+        else:
+            raise Exception("Unable to connect to interface server")
+        print "Connected."
 
-    def __call__(self):
-        now_time = time.time()
-        if now_time - self.last_time > self.interval_time:
-            self.callback()
-            self.last_time = now_time
+    def send(self, method, params):
+        self.interface.send([(method, params)])
+
+    def response(self):
+        response = self.interface.get_response()
+        return (response.get("method"),
+                response.get("params"),
+                response.get("result"))
+
+class AddressResolver:
+
+    def __init__(self):
+        self.addrs = {}
+        self.txs = {}
+        self.needed_txs = {}
+
+    def compute_status(self, address):
+        history = self.addrs[address]
+        status = ""
+        for tx in history:
+            tx_hash, tx_height = tx["tx_hash"], tx["height"]
+            status += tx_hash + ":%d:" % int(tx_height)
+        return hashlib.sha256(status).hexdigest()
+
+    def history_is_required(self, address, status):
+        if address not in self.addrs:
+            return True
+        return self.compute_status(self.addrs[address]) != status
+
+    def set_history(self, address, history):
+        self.addrs[address] = history
+        for item in history:
+            tx_hash = item["tx_hash"].decode("hex")
+            self.needed_txs[tx_hash] = address
+
+    def transaction(self, tx_hash):
+        return self.txs.get(tx_hash)
+
+    def add_transaction(self, tx_hash, tx_body):
+        self.txs[tx_hash] = tx_body
+        return self.needed_txs.pop(tx_hash, None)
+
+    def received(self, address):
+        history = self.addrs[address]
+        total_value = 0
+        for item in history:
+            tx_hash = item["tx_hash"].decode("hex")
+            if tx_hash not in self.txs:
+                return None
+            tx = self.txs[tx_hash]
+            for output in tx["outputs"]:
+                if output["address"] == address:
+                    total_value += output["value"]
+        return total_value
 
 class Application:
 
     def __init__(self, wallet):
         self.wallet = wallet
-        self.monitor = fastmonitor.FastMonitor()
-        self.nonce = 0
+        self.resolver = AddressResolver()
+        self.interface = Interface()
 
     def start(self):
-        self.http = httplib2.Http()
-        self.monitor.start()
+        self.interface.start()
         self.run()
 
-    def stop(self):
-        self.monitor.stop()
-
     def run(self):
-        update_wallet = PeriodicMethod(10, self.update_wallet)
-        update_latest_block = PeriodicMethod(60, self.update_latest_block)
         while True:
-            # Only calls every N seconds.
-            update_wallet()
-            update_latest_block()
-            # Protection against timing attacks.
-            time.sleep(random.random())
-            # Pull in changed addresses and get updates for them.
-            addrs = self.monitor.pull()
-            for addr, tx_hash, output_index in addrs:
-                self.update_address(addr)
+            self.update()
+
+    def update(self):
+        self.update_wallet()
+        self.process_response()
 
     def update_wallet(self):
         latest_id = poll_latest_id()
         addrs = self.wallet.update(latest_id)
         for addr in addrs:
-            self.monitor.push(addr)
-            self.update_address(addr)
+            print "New address: ", addr
+            self.interface.send("blockchain.address.subscribe", [addr])
+            self.interface.send("blockchain.address.get_history", [addr])
 
-    def make_request(self, url):
-        status, response = self.http.request(url)
-        if status["status"] != '200':
-            return None
-        return json.loads(response)
+    def process_response(self):
+        method, params, result = self.interface.response()
+        if method == "blockchain.address.subscribe":
+            addr = params[0]
+            if self.resolver.history_is_required(addr, result):
+                self.interface.send("blockchain.address.get_history", [addr])
+        elif method == "blockchain.address.get_history":
+            addr = params[0]
+            self.resolver.set_history(addr, result)
+            for item in result:
+                self.process_history_item(addr, item)
+        elif method == "blockchain.transaction.get":
+            tx_hash = params[0]
+            tx_height = params[1]
+            self.process_tx(tx_hash, tx_height, result)
 
-    def update_latest_block(self):
-        response = self.make_request("https://blockchain.info/latestblock")
-        if response is None:
-            print "Problem updating latest block"
-            return False
-        block_hash = response["hash"].decode("hex")
-        self.monitor.set_latest_block(block_hash)
-        return True
+    def process_history_item(self, address, item):
+        tx_hash = item["tx_hash"]
+        tx_height = item["height"]
+        if self.resolver.transaction(tx_hash.decode("hex")) is None:
+            self.interface.send("blockchain.transaction.get",
+                                [tx_hash, tx_height])
 
-    def update_address(self, address):
-        print "Address: ", address
-        response = self.make_request("https://blockchain.info/unspent?active=%s" % address)
-        if response is None:
-            print "No spends available."
-            return False
-        unspent = response["unspent_outputs"]
-        balances = [0, 0]
-        for output in unspent:
-            if output["confirmations"] >= 1:
-                balances[1] += output["value"]
-            else:
-                balances[0] += output["value"]
-        # POST this new balance now.
-        self.post_balances(address, balances)
-        return True
+    def process_tx(self, tx_hash, tx_height, raw_tx):
+        tx = self.deserialize_tx(tx_hash, tx_height, raw_tx)
+        addr = self.resolver.add_transaction(tx_hash.decode("hex"), tx)
+        if addr is None:
+            return
+        total_value = self.resolver.received(addr)
+        if total_value is None:
+            return
+        print addr, total_value
 
-    def post_balances(self, address, balances):
-        self.nonce += 1
+    def deserialize_tx(self, tx_hash, tx_height, raw_tx):
+        vds = deserialize.BCDataStream()
+        vds.write(raw_tx.decode('hex'))
+        tx = deserialize.parse_Transaction(vds)
+        tx['height'] = tx_height
+        tx['tx_hash'] = tx_hash
+        return tx
 
-mpk = "28070630d7c5103fc93784facb84113ded4831e73681b821f5799ebfeabeb2611cffc48bb40cf2f7e06300abf780241fa161818e8457f87b798a95beda82a712".decode("hex")
+mpk = "3315ae236373067ea27d92f10f9475b1ff727eebe45f4ce4dd21cf548a237755397548d57fdb94610aef20993b4ff4695cae581d3be98743593336b21090c7d2".decode("hex")
 wallet = Wallet(mpk)
 app = Application(wallet)
-try:
-    app.start()
-except KeyboardInterrupt:
-    print "Stopping..."
-    app.stop()
+app.start()
 
