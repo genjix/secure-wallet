@@ -106,6 +106,14 @@ class AddressResolver:
             else:
                 balances[1] += output["value"]
 
+def deserialize_tx(tx_hash, tx_height, raw_tx):
+    vds = deserialize.BCDataStream()
+    vds.write(raw_tx.decode('hex'))
+    tx = deserialize.parse_Transaction(vds)
+    tx['height'] = tx_height
+    tx['tx_hash'] = tx_hash
+    return tx
+
 class Application:
 
     def __init__(self, wallet):
@@ -157,22 +165,17 @@ class Application:
                                 [tx_hash, tx_height])
 
     def process_tx(self, tx_hash, tx_height, raw_tx):
-        tx = self.deserialize_tx(tx_hash, tx_height, raw_tx)
-        addr = self.resolver.add_transaction(tx_hash.decode("hex"), tx)
-        if addr is None:
+        tx = deserialize_tx(tx_hash, tx_height, raw_tx)
+        address = self.resolver.add_transaction(tx_hash.decode("hex"), tx)
+        if address is None:
             return
-        total_value = self.resolver.received(addr)
-        if total_value is None:
+        balances = self.resolver.received(address)
+        if balances is None:
             return
-        print addr, total_value
+        self.balance_changed(address, balances)
 
-    def deserialize_tx(self, tx_hash, tx_height, raw_tx):
-        vds = deserialize.BCDataStream()
-        vds.write(raw_tx.decode('hex'))
-        tx = deserialize.parse_Transaction(vds)
-        tx['height'] = tx_height
-        tx['tx_hash'] = tx_hash
-        return tx
+    def balance_changed(self, address, balances):
+        print address, balances
 
 mpk = "3315ae236373067ea27d92f10f9475b1ff727eebe45f4ce4dd21cf548a237755397548d57fdb94610aef20993b4ff4695cae581d3be98743593336b21090c7d2".decode("hex")
 wallet = Wallet(mpk)
