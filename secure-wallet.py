@@ -150,8 +150,13 @@ class Application:
         elif method == "blockchain.address.get_history":
             addr = params[0]
             self.resolver.set_history(addr, result)
+            # Have we got all the transactions needed
+            missing_tx = False
             for item in result:
-                self.process_history_item(addr, item)
+                if not self.process_history_item(addr, item):
+                    missing_tx = True
+            if missing_tx:
+                self.compute_balances(addr)
         elif method == "blockchain.transaction.get":
             tx_hash = params[0]
             tx_height = params[1]
@@ -163,12 +168,17 @@ class Application:
         if self.resolver.transaction(tx_hash.decode("hex")) is None:
             self.interface.send("blockchain.transaction.get",
                                 [tx_hash, tx_height])
+            return False
+        return True
 
     def process_tx(self, tx_hash, tx_height, raw_tx):
         tx = deserialize_tx(tx_hash, tx_height, raw_tx)
         address = self.resolver.add_transaction(tx_hash.decode("hex"), tx)
         if address is None:
             return
+        self.compute_balances(address)
+
+    def compute_balances(self, address):
         balances = self.resolver.received(address)
         if balances is None:
             return
