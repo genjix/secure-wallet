@@ -155,7 +155,7 @@ class Application:
             for item in result:
                 if not self.process_history_item(addr, item):
                     missing_tx = True
-            if missing_tx:
+            if not missing_tx:
                 self.compute_balances(addr)
         elif method == "blockchain.transaction.get":
             tx_hash = params[0]
