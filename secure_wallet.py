@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+from collections import defaultdict
 import hashlib
 import sys
 import time
@@ -57,6 +58,14 @@ class AddressResolver:
         self.addrs = {}
         self.txs = {}
         self.needed_txs = {}
+        self.current_block_height = None
+        self.watch_heights = defaultdict([])
+
+    def set_current_block_height(self, height):
+        self.current_block_height = height
+        addrs = self.watch_heights[height]:
+        del self.watch_heights[height]
+        return addrs
 
     def compute_status(self, address):
         history = self.addrs[address]
@@ -93,7 +102,17 @@ class AddressResolver:
             if tx_hash not in self.txs:
                 return None
             tx = self.txs[tx_hash]
-            is_confirmed = tx_height >= 2
+            is_confirmed = tx_height > 0
+            # Could be None on initialisation if block_height is not yet set.
+            assert self.current_block_height is not None
+            assert self.current_block_height >= tx_height
+            number_confirms = self.current_block_height - tx_height
+            target_confirms = 2
+            if number_confirms < target_confirms:
+                # Watch this address
+                # First confirmation is already a confirm so minus 1
+                target_height = tx_height + target_confirms - 1
+                self.watch_heights[target_height].append(address)
             self.check_outputs(tx["outputs"], address, balances, is_confirmed)
         return balances
 
@@ -123,6 +142,7 @@ class Application:
 
     def start(self):
         self.interface.start()
+        self.interface.send("blockchain.numblocks.subscribe", [])
         self.run()
 
     def run(self):
@@ -161,6 +181,10 @@ class Application:
             tx_hash = params[0]
             tx_height = params[1]
             self.process_tx(tx_hash, tx_height, result)
+        elif method == "blockchain.numblocks.subscribe":
+            addrs = self.resolver.set_current_block_height(result)
+            for address in addrs:
+                self.compute_balances(address)
 
     def process_history_item(self, address, item):
         tx_hash = item["tx_hash"]
