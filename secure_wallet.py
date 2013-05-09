@@ -59,7 +59,7 @@ class AddressResolver:
         self.txs = {}
         self.needed_txs = {}
         self.current_block_height = None
-        self.watch_heights = defaultdict([])
+        self.watch_heights = defaultdict(list)
 
     def set_current_block_height(self, height):
         self.current_block_height = height
