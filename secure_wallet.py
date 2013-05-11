@@ -59,11 +59,11 @@ class AddressResolver:
         self.txs = {}
         self.needed_txs = {}
         self.current_block_height = None
-        self.watch_heights = defaultdict(list)
+        self.watch_heights = defaultdict(set)
 
     def set_current_block_height(self, height):
         self.current_block_height = height
-        addrs = self.watch_heights[height]:
+        addrs = self.watch_heights[height]
         del self.watch_heights[height]
         return addrs
 
@@ -106,13 +106,16 @@ class AddressResolver:
             # Could be None on initialisation if block_height is not yet set.
             assert self.current_block_height is not None
             assert self.current_block_height >= tx_height
-            number_confirms = self.current_block_height - tx_height
+            number_confirms = self.current_block_height + 1 - tx_height
             target_confirms = 2
-            if number_confirms < target_confirms:
+            print address, self.current_block_height, tx_height, number_confirms
+            if is_confirmed and number_confirms < target_confirms:
                 # Watch this address
                 # First confirmation is already a confirm so minus 1
                 target_height = tx_height + target_confirms - 1
-                self.watch_heights[target_height].append(address)
+                self.watch_heights[target_height].add(address)
+                # override is_confirmed since we need to wait
+                is_confirmed = False
             self.check_outputs(tx["outputs"], address, balances, is_confirmed)
         return balances
 
