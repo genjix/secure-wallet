@@ -8,6 +8,49 @@ import deserialize
 import detwallet
 import electrum
 
+servers = (
+    ("electrum.no-ip.org", 50002),
+    ("electra.datemas.de", 50002),
+    ("electrum.bysh.me", 51002),
+    ("electrum.yacoin.com", 50002),
+    ("electrum.coinwallet.me", 50002),
+    ("electrum.pdmc.net", 50002),
+    ("electrum.be", 50002),
+    ("electrum.novit.ro", 50002),
+)
+
+class Interface:
+
+    def start(self):
+        for server, port in servers:
+            if self.try_connect(server, port):
+                return
+
+    def try_connect(self, server, port):
+        for i in range(10):
+            self.interface = electrum.Interface(
+                {"server": "%s:%s:s" % (server, port)})
+            self.interface.start()
+            if self.interface.is_connected:
+                break
+            time.sleep(10)
+        else:
+            return False
+        print "Connected."
+        return True
+
+    def send(self, method, params):
+        self.interface.send([(method, params)])
+
+    def response(self, timeout):
+        try:
+            response = self.interface.get_response(timeout=timeout)
+        except:
+            return None, None, None
+        return (response.get("method"),
+                response.get("params"),
+                response.get("result"))
+
 def poll_latest_id():
     f = open("block-count")
     return int(f.read())
@@ -29,28 +72,6 @@ class Wallet:
             addrs.append(detwallet.pubkey_to_address(pubkey))
         self.sequence = latest_id
         return addrs
-
-class Interface:
-
-    def start(self):
-        self.interface = electrum.Interface({"server": "ecdsa.org:50001:t"})
-        self.interface.start()
-        for i in range(8):
-            if self.interface.is_connected:
-                break
-            time.sleep(1)
-        else:
-            raise Exception("Unable to connect to interface server")
-        print "Connected."
-
-    def send(self, method, params):
-        self.interface.send([(method, params)])
-
-    def response(self):
-        response = self.interface.get_response()
-        return (response.get("method"),
-                response.get("params"),
-                response.get("result"))
 
 class AddressResolver:
 
@@ -144,13 +165,13 @@ class Application:
         self.interface = Interface()
 
     def start(self):
-        self.interface.start()
-        self.interface.send("blockchain.numblocks.subscribe", [])
-        self.run()
-
-    def run(self):
         while True:
-            self.update()
+            self.interface = Interface()
+            self.interface.start()
+            self.interface.send("blockchain.numblocks.subscribe", [])
+            while self.interface.interface.is_connected:
+                self.update()
+            print "Disconnected. Attempting to reconnect."
 
     def update(self):
         self.update_wallet()
@@ -165,7 +186,9 @@ class Application:
             self.interface.send("blockchain.address.get_history", [addr])
 
     def process_response(self):
-        method, params, result = self.interface.response()
+        method, params, result = self.interface.response(20)
+        if method is None:
+            return
         if method == "blockchain.address.subscribe":
             addr = params[0]
             if self.resolver.history_is_required(addr, result):
