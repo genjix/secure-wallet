@@ -62,6 +62,9 @@ class Wallet:
         self.detwallet = detwallet.DeterministicWallet()
         self.detwallet.set_master_public_key(master_public_key)
 
+    def reset(self):
+        self.sequence = -1
+
     def update(self, latest_id):
         if latest_id <= self.sequence:
             return []
@@ -166,6 +169,7 @@ class Application:
 
     def start(self):
         while True:
+            self.wallet.reset()
             self.interface = Interface()
             self.interface.start()
             self.interface.send("blockchain.numblocks.subscribe", [])
